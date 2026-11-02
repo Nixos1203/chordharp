@@ -29,20 +29,47 @@ namespace
         return (float) v;
     }
 
-    inline float triangle (double t) noexcept
+    inline float pulseBlep (double t, double dt, double width) noexcept
     {
-        return 1.0f - 4.0f * std::abs ((float) t - 0.5f);
+        double t2 = t + width;
+        if (t2 >= 1.0) t2 -= 1.0;
+        return sawBlep (t, dt) - sawBlep (t2, dt);
     }
 
-    inline double midiToHz (int note) noexcept
-    {
-        return 440.0 * std::pow (2.0, (note - 69) / 12.0);
-    }
+    inline float triangle (double t) noexcept   { return 1.0f - 4.0f * std::abs ((float) t - 0.5f); }
+    inline float sine (double t) noexcept       { return (float) std::sin (twoPi * t); }
+    inline double midiToHz (int note) noexcept  { return 440.0 * std::pow (2.0, (note - 69) / 12.0); }
 
     inline void wrap (double& ph) noexcept
     {
-        if (ph >= 1.0) ph -= 1.0;
+        if (ph >= 1.0) ph -= std::floor (ph);
     }
+
+    // Réglages par modèle de son de plaque
+    //                                      Omni1 Omni2 Harpe Guit. Banjo Vibes EPno  Crist Synth MBox
+    constexpr float plateDecayMul[]     = { 1.0f, 1.1f, 1.2f, 1.0f, 0.45f, 1.3f, 1.0f, 1.3f, 0.7f, 0.55f };
+    constexpr float plateFastTime[]     = { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.45f, 0.35f, 0.9f, 0.28f, 0.12f };
+    constexpr double plateModRatio[]    = { 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.5, 1.006, 5.4 };
+
+    // Filtre passe-bas fixe par modèle d'accord (Hz)
+    constexpr double padCutoff[]        = { 2200.0, 20000.0, 3200.0, 2600.0, 1300.0, 20000.0 };
+
+    inline bool isPlucked (int model) noexcept { return model == Harp || model == Guitar || model == Banjo; }
+}
+
+//==============================================================================
+float Engine::plateModelGain (int model) noexcept
+{
+    //                              Omni1 Omni2 Harpe Guit. Banjo Vibes EPno  Crist Synth MBox
+    constexpr float gains[]     = { 1.0f, 0.62f, 3.1f, 3.0f, 3.7f, 0.52f, 0.6f, 0.49f, 0.92f, 0.8f };
+    return gains[juce::jlimit (0, NumPlateVoices - 1, model)];
+}
+
+float Engine::padModelGain (int model) noexcept
+{
+    //                              Analog Orgue Cordes Accord. Choeur EPiano
+    constexpr float gains[]     = { 1.0f,  0.6f, 0.72f, 0.54f,  0.88f, 1.4f };
+    return gains[juce::jlimit (0, NumPadVoices - 1, model)];
 }
 
 //==============================================================================
@@ -91,6 +118,10 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     maxBlock = juce::jmax (1, maxBlockSize);
     mix.setSize (2, maxBlock);
 
+    ksMemory.assign (plucks.size() * (size_t) ksSize, 0.0f);
+    for (size_t i = 0; i < plucks.size(); ++i)
+        plucks[i].ks = ksMemory.data() + i * (size_t) ksSize;
+
     const juce::dsp::ProcessSpec spec { sr, (juce::uint32) maxBlock, 2 };
     chorus.prepare (spec);
     chorus.setRate (0.6f);
@@ -115,6 +146,8 @@ void Engine::reset()
     for (auto& v : basses) { v.active = false; v.adsr.reset(); }
     held.clear();
     lastWheel = -1;
+    plateBright = 0.5f;
+    uiBright = 0.5f;
     chorus.reset();
     reverb.reset();
     uiHeld = false;
@@ -132,6 +165,19 @@ void Engine::startChord (int r, int t)
     for (auto& v : pads)   if (v.active) v.adsr.noteOff();
     for (auto& v : basses) if (v.active) v.adsr.noteOff();
 
+    const int model = juce::jlimit (0, NumPadVoices - 1, p.padVoice);
+
+    juce::ADSR::Parameters env;
+    switch (model)
+    {
+        case PadOrgan:     env = { 0.004f, 0.05f, 1.0f,  0.07f }; break;
+        case PadStrings:   env = { 0.22f,  0.5f,  0.85f, 0.55f }; break;
+        case PadAccordion: env = { 0.03f,  0.1f,  0.9f,  0.12f }; break;
+        case PadChoir:     env = { 0.35f,  0.6f,  0.8f,  0.8f  }; break;
+        case PadEPiano:    env = { 0.002f, 1.8f,  0.2f,  0.35f }; break;
+        default:           env = { 0.012f, 0.35f, 0.75f, 0.28f }; break;
+    }
+
     int iv[4];
     const int n = chordIntervals (t, iv);
 
@@ -148,12 +194,16 @@ void Engine::startChord (int r, int t)
         }
 
         slot->active = true;
+        slot->model = model;
         slot->inc = midiToHz (note) / sr;
-        slot->ph1 = 0.0;
-        slot->ph2 = 0.37;
+        slot->ph[0] = 0.0;
+        slot->ph[1] = 0.37;
+        slot->ph[2] = 0.71;
         slot->lp1 = slot->lp2 = 0.0f;
+        slot->fmEnv = 1.0f;
+        slot->fmDecay = (float) std::exp (-6.9 / (0.5 * sr));
         slot->age = ++ageCounter;
-        slot->adsr.setParameters ({ 0.012f, 0.35f, 0.75f, 0.28f });
+        slot->adsr.setParameters (env);
         slot->adsr.reset();
         slot->adsr.noteOn();
     }
@@ -187,7 +237,8 @@ void Engine::releaseChord()
 void Engine::triggerPlate (int index, float velocity)
 {
     index = juce::jlimit (0, numPlate - 1, index);
-    const int note = plateNoteFor (root, type, index);
+    const int note  = plateNoteFor (root, type, index);
+    const int model = juce::jlimit (0, NumPlateVoices - 1, p.plateVoice);
 
     Pluck* slot = &plucks[0];
     for (auto& v : plucks)
@@ -197,15 +248,85 @@ void Engine::triggerPlate (int index, float velocity)
     }
 
     auto& v = *slot;
-    v.active = true;
-    v.freq   = (float) midiToHz (note);
-    v.inc    = v.freq / sr;
-    v.phase  = 0.0;
-    v.env    = 1.0f;
-    v.att    = 0.0f;
-    v.lp     = 0.0f;
-    v.decay  = (float) std::exp (-6.9 / (juce::jmax (0.05f, p.strumDecay) * sr));   // -60 dB après "strumDecay" secondes
-    v.vel    = 0.35f + 0.65f * velocity;
+    const float decaySec = juce::jmax (0.05f, p.strumDecay) * plateDecayMul[model];
+
+    v.active    = true;
+    v.model     = model;
+    v.freq      = (float) midiToHz (note);
+    v.inc       = v.freq / sr;
+    v.minc      = v.inc * plateModRatio[model];
+    v.phase     = 0.0;
+    v.mphase    = 0.0;
+    v.env       = 1.0f;
+    v.envFast   = 1.0f;
+    v.att       = 0.0f;
+    v.lp        = 0.0f;
+    v.lp2       = 0.0f;
+    v.decay     = (float) std::exp (-6.9 / (decaySec * sr));   // -60 dB après decaySec
+    v.decayFast = (float) std::exp (-6.9 / (plateFastTime[model] * sr));
+    v.vel       = 0.35f + 0.65f * velocity;
+
+    if (isPlucked (model))
+    {
+        // Karplus-Strong : la corde se décroît dans la boucle, l'enveloppe ne sert que de garde-fou
+        const float t = juce::jlimit (0.0f, 1.0f, p.strumTone + (plateBright - 0.5f) * 0.9f);
+        // Le filtre de boucle suit la hauteur : coupure = N harmoniques au-dessus de la note,
+        // pour que les aigus sonnent aussi longtemps que les graves.
+        float harmonics, exA;
+        if (model == Harp)        { harmonics = 5.0f + 7.0f * t;   exA = 0.15f + 0.40f * t; }
+        else if (model == Guitar) { harmonics = 8.0f + 16.0f * t;  exA = 0.30f + 0.60f * t; }
+        else                      { harmonics = 14.0f + 26.0f * t; exA = 0.60f + 0.40f * t; }
+
+        const double fc = juce::jmin ((double) (harmonics * v.freq), 0.45 * sr);
+        v.ksA   = (float) (1.0 - std::exp (-twoPi * fc / sr));
+        v.ksExA = juce::jmax (exA, v.ksA);
+
+        // Accordage exact : on retire le retard de phase du filtre de boucle et de l'interpolation
+        const double w   = twoPi * v.freq / sr;
+        const double b   = 1.0 - v.ksA;
+        const double lpDelay = std::atan2 (b * std::sin (w), 1.0 - b * std::cos (w)) / w;
+        const double target  = sr / v.freq - lpDelay;
+        v.ksInt = juce::jmax (1, (int) std::floor (target));
+        const double frac = target - v.ksInt;
+
+        double lo = 0.0, hi = 1.0;               // poids de l'échantillon le plus récent
+        for (int it = 0; it < 30; ++it)
+        {
+            const double fr = 0.5 * (lo + hi);
+            const double d = std::atan2 ((1.0 - fr) * std::sin (w), fr + (1.0 - fr) * std::cos (w)) / w;
+            if (d > frac) lo = fr; else hi = fr;
+        }
+        v.ksFrac = (float) (0.5 * (lo + hi));
+
+        // Excitation : une période de bruit filtré, centrée et normalisée (volume régulier d'une note à l'autre)
+        std::fill (v.ks, v.ks + ksSize, 0.0f);
+        const int len = juce::jmin (ksSize - 1, v.ksInt + 2);
+        float lpState = 0.0f, mean = 0.0f;
+        for (int j = 0; j < len; ++j)
+        {
+            lpState += v.ksExA * ((rng.nextFloat() * 2.0f - 1.0f) - lpState);
+            v.ks[ksSize - 1 - j] = lpState;
+            mean += lpState;
+        }
+        mean /= (float) len;
+        float energy = 0.0f;
+        for (int j = 0; j < len; ++j)
+        {
+            auto& x = v.ks[ksSize - 1 - j];
+            x -= mean;
+            energy += x * x;
+        }
+        const float norm = 0.5f / std::sqrt (energy / (float) len + 1.0e-12f);
+        for (int j = 0; j < len; ++j)
+            v.ks[ksSize - 1 - j] *= norm;
+
+        v.ksW      = 0;
+        v.ksExcite = 0;
+        const double lpMag = v.ksA / std::sqrt (1.0 - 2.0 * b * std::cos (w) + b * b);
+        v.ksGain   = (float) juce::jmin (0.9995, std::pow (10.0, -3.0 / (decaySec * v.freq)) / lpMag);
+        v.exLp     = 0.0f;
+        v.decay    = (float) std::exp (-6.9 / (decaySec * 1.4 * sr));
+    }
 
     const float pan   = -0.55f + 1.1f * (float) index / (float) (numPlate - 1);
     const float angle = (pan + 1.0f) * 0.25f * juce::MathConstants<float>::pi;
@@ -273,6 +394,11 @@ void Engine::handle (const juce::MidiMessage& m)
         }
         lastWheel = pos;
     }
+    else if (m.isController() && m.getControllerNumber() == 74)
+    {
+        plateBright = (float) m.getControllerValue() / 127.0f;
+        uiBright = plateBright;
+    }
     else if (m.isAllNotesOff() || m.isAllSoundOff())
     {
         held.clear();
@@ -284,87 +410,258 @@ void Engine::handle (const juce::MidiMessage& m)
 }
 
 //==============================================================================
+float Engine::renderPluck (Pluck& v, double vib, float lfo01, float t) noexcept
+{
+    const float fcScale = (float) (twoPi / sr);
+    const double dt = v.inc * vib;
+    float s = 0.0f;
+
+    switch (v.model)
+    {
+        case Omni1:
+        {
+            // le son "analogique" classique : triangle -> carré, filtre qui se referme
+            const float raw = (1.0f - t) * triangle (v.phase) + t * 0.55f * squareBlep (v.phase, dt);
+            const float fc  = (450.0f + t * 6500.0f) * (0.2f + 0.8f * v.env) + v.freq * 1.5f;
+            v.lp += juce::jmin (1.0f, fc * fcScale) * (raw - v.lp);
+            s = v.lp;
+            v.phase += dt;
+            break;
+        }
+
+        case Omni2:
+        {
+            // plus rond et plus "chantant", vibrato plus marqué
+            const double dt2 = v.inc * (1.0 + (vib - 1.0) * 1.6);
+            const float raw = triangle (v.phase) + 0.3f * sine (2.0 * v.phase);
+            const float fc  = (300.0f + t * 3000.0f) * (0.3f + 0.7f * v.env) + v.freq * 2.0f;
+            v.lp += juce::jmin (1.0f, fc * fcScale) * (raw - v.lp);
+            s = v.lp;
+            v.phase += dt2;
+            break;
+        }
+
+        case Harp:
+        case Guitar:
+        case Banjo:
+        {
+            const float newer = v.ks[(v.ksW - v.ksInt) & ksMask];
+            const float older = v.ks[(v.ksW - v.ksInt - 1) & ksMask];
+            const float d = v.ksFrac * newer + (1.0f - v.ksFrac) * older;
+
+            v.lp += v.ksA * (d - v.lp);
+
+            float in = 0.0f;
+            if (v.ksExcite > 0)
+            {
+                const float nz = rng.nextFloat() * 2.0f - 1.0f;
+                v.exLp += v.ksExA * (nz - v.exLp);
+                in = v.exLp * std::sqrt ((2.0f - v.ksExA) / v.ksExA) * 0.6f;
+                --v.ksExcite;
+            }
+
+            const float y = in + v.ksGain * v.lp;
+            v.ks[v.ksW] = y;
+            v.ksW = (v.ksW + 1) & ksMask;
+            s = y;
+            break;
+        }
+
+        case Vibes:
+        {
+            s = sine (v.phase)
+              + (0.25f + 0.4f * t) * v.envFast * sine (4.0 * v.phase)
+              + 0.15f * t * v.envFast * v.envFast * sine (10.0 * v.phase);
+            s *= 1.0f - 0.6f * p.vibrato * lfo01;              // trémolo façon vibraphone
+            v.phase += v.inc;
+            break;
+        }
+
+        case EPiano:
+        {
+            const float index = 2.4f * (0.25f + t) * v.envFast;
+            s = (float) std::sin (twoPi * v.phase + index * std::sin (twoPi * v.phase));
+            v.phase += dt;
+            break;
+        }
+
+        case Crystal:
+        {
+            const float index = 2.6f * (0.25f + t) * v.envFast;
+            s = (float) std::sin (twoPi * v.phase + index * std::sin (twoPi * v.mphase));
+            v.phase += dt;
+            v.mphase += v.minc * vib;
+            break;
+        }
+
+        case SynthPluck:
+        {
+            const double mdt = v.minc * vib;
+            const float raw = sawBlep (v.phase, dt) + 0.6f * sawBlep (v.mphase, mdt);
+            const float fc  = 120.0f + (250.0f + t * 8500.0f) * v.envFast;
+            const float g   = juce::jmin (1.0f, fc * fcScale);
+            v.lp  += g * (raw - v.lp);
+            v.lp2 += g * (v.lp - v.lp2);
+            s = v.lp2;
+            v.phase += dt;
+            v.mphase += mdt;
+            break;
+        }
+
+        case MusicBox:
+        default:
+        {
+            s = sine (v.phase)
+              + 0.3f * v.envFast * sine (v.mphase)
+              + 0.15f * v.envFast * sine (2.0 * v.phase);
+            v.phase += dt;
+            v.mphase += v.minc * vib;
+            break;
+        }
+    }
+
+    wrap (v.phase);
+    wrap (v.mphase);
+
+    v.att = juce::jmin (1.0f, v.att + (float) (1.0 / (0.0015 * sr)));
+    const float out = s * v.env * v.att * v.vel;
+
+    v.env     *= v.decay;
+    v.envFast *= v.decayFast;
+
+    if (v.env < 0.0005f)
+        v.active = false;
+
+    return out;
+}
+
+float Engine::renderPad (Pad& v, double vib) noexcept
+{
+    const float e = v.adsr.getNextSample();
+    const double dt = v.inc * vib;
+    float s = 0.0f;
+    bool filtered = true;
+
+    switch (v.model)
+    {
+        case PadOrgan:
+            s = sine (v.ph[0]) + 0.8f * sine (2.0 * v.ph[0]) + 0.5f * sine (3.0 * v.ph[0]) + 0.3f * sine (4.0 * v.ph[0]);
+            v.ph[0] += dt;
+            filtered = false;
+            break;
+
+        case PadStrings:
+        {
+            const double d0 = dt, d1 = dt * 1.006, d2 = dt * 0.994;
+            s = sawBlep (v.ph[0], d0) + sawBlep (v.ph[1], d1) + sawBlep (v.ph[2], d2);
+            v.ph[0] += d0; v.ph[1] += d1; v.ph[2] += d2;
+            break;
+        }
+
+        case PadAccordion:
+        {
+            const double d0 = dt * 1.0045, d1 = dt * 0.9955;   // effet "musette"
+            s = pulseBlep (v.ph[0], d0, 0.3) + pulseBlep (v.ph[1], d1, 0.3);
+            v.ph[0] += d0; v.ph[1] += d1;
+            break;
+        }
+
+        case PadChoir:
+        {
+            const double d0 = dt * 1.002, d1 = dt * 0.998;
+            s = triangle (v.ph[0]) + triangle (v.ph[1]) + 0.3f * sine (2.0 * v.ph[2]);
+            v.ph[0] += d0; v.ph[1] += d1; v.ph[2] += dt;
+            break;
+        }
+
+        case PadEPiano:
+        {
+            const float index = 1.8f * v.fmEnv;
+            s = (float) std::sin (twoPi * v.ph[0] + index * std::sin (twoPi * v.ph[0]));
+            v.fmEnv *= v.fmDecay;
+            v.ph[0] += dt;
+            filtered = false;
+            break;
+        }
+
+        case PadAnalog:
+        default:
+        {
+            const double d0 = dt * 1.0035, d1 = dt * 0.9965;
+            s = sawBlep (v.ph[0], d0) + sawBlep (v.ph[1], d1);
+            v.ph[0] += d0; v.ph[1] += d1;
+            break;
+        }
+    }
+
+    for (auto& ph : v.ph)
+        wrap (ph);
+
+    if (filtered)
+    {
+        const float g = (float) juce::jmin (1.0, twoPi * padCutoff[v.model] / sr);
+        v.lp1 += g * (s - v.lp1);
+        v.lp2 += g * (v.lp1 - v.lp2);
+        s = v.lp2;
+    }
+
+    if (! v.adsr.isActive())
+        v.active = false;
+
+    return s * e * padModelGain (v.model);
+}
+
 void Engine::render (int start, int end)
 {
     auto* L = mix.getWritePointer (0);
     auto* R = mix.getWritePointer (1);
 
-    const float tone       = p.strumTone;
-    const float strumGain  = p.strumLevel * 0.30f;
-    const float padGain    = p.chordLevel * 0.10f;
-    const float bassGain   = p.bassLevel * 0.40f;
-    const double lfoInc    = 5.3 / sr;
-    const double vibDepth  = p.vibrato * 0.0065;
-    const float attStep    = (float) (1.0 / (0.0015 * sr));
-    const float padG       = (float) juce::jmin (1.0, twoPi * 2200.0 / sr);
-    const float baseFc     = 450.0f + tone * 6500.0f;
-    const float fcScale    = (float) (twoPi / sr);
+    const float strumGain = p.strumLevel * 0.30f;
+    const float padGain   = p.chordLevel * 0.10f;
+    const float bassGain  = p.bassLevel * 0.40f;
+    const double lfoInc   = 5.3 / sr;
+    const double vibDepth = p.vibrato * 0.0065;
+
+    // Timbre effectif : bouton TIMBRE + position horizontale sur le pad (CC74)
+    const float tEff = juce::jlimit (0.0f, 1.0f, p.strumTone + (plateBright - 0.5f) * 0.9f);
+
+    float plateGains[NumPlateVoices];
+    for (int m = 0; m < NumPlateVoices; ++m)
+        plateGains[m] = strumGain * plateModelGain (m);
 
     for (int i = start; i < end; ++i)
     {
         lfoPhase += lfoInc;
         wrap (lfoPhase);
         const double lfo = std::sin (twoPi * lfoPhase);
+        const float lfo01 = (float) (0.5 + 0.5 * lfo);
         const double vibPluck = 1.0 + vibDepth * lfo;
         const double vibPad   = 1.0 + vibDepth * 0.4 * lfo;
 
         float l = 0.0f, r = 0.0f;
 
-        // --- Plaque (slide) : son "harpe électronique" ---
         for (auto& v : plucks)
         {
             if (! v.active) continue;
-
-            const double dt = v.inc * vibPluck;
-            const float raw = (1.0f - tone) * triangle (v.phase) + tone * 0.55f * squareBlep (v.phase, dt);
-
-            const float fc = baseFc * (0.2f + 0.8f * v.env) + v.freq * 1.5f;
-            const float g  = juce::jmin (1.0f, fc * fcScale);
-            v.lp += g * (raw - v.lp);
-
-            v.att = juce::jmin (1.0f, v.att + attStep);
-            const float s = v.lp * v.env * v.att * v.vel * strumGain;
+            const float s = renderPluck (v, vibPluck, lfo01, tEff) * plateGains[v.model];
             l += s * v.gainL;
             r += s * v.gainR;
-
-            v.env *= v.decay;
-            v.phase += dt;
-            wrap (v.phase);
-
-            if (v.env < 0.0005f)
-                v.active = false;
         }
 
-        // --- Accord tenu : deux dents de scie désaccordées filtrées ---
         for (auto& v : pads)
         {
             if (! v.active) continue;
-
-            const float e  = v.adsr.getNextSample();
-            const double dt = v.inc * vibPad;
-            const double d1 = dt * 1.0035, d2 = dt * 0.9965;
-            const float s  = sawBlep (v.ph1, d1) + sawBlep (v.ph2, d2);
-            v.ph1 += d1; wrap (v.ph1);
-            v.ph2 += d2; wrap (v.ph2);
-
-            v.lp1 += padG * (s - v.lp1);
-            v.lp2 += padG * (v.lp1 - v.lp2);
-
-            const float o = v.lp2 * e * padGain;
+            const float o = renderPad (v, vibPad) * padGain;
             l += o;
             r += o;
-
-            if (! v.adsr.isActive())
-                v.active = false;
         }
 
-        // --- Basse auto ---
         for (auto& v : basses)
         {
             if (! v.active) continue;
 
             const float e = v.adsr.getNextSample();
-            const float s = (float) std::sin (twoPi * v.phase) + 0.2f * triangle (v.phase);
+            const float s = sine (v.phase) + 0.2f * triangle (v.phase);
             v.phase += v.inc;
             wrap (v.phase);
 

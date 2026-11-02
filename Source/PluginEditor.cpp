@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "Presets.h"
 
 using chordharp::Engine;
 
@@ -10,8 +11,8 @@ namespace
     const char* const typeSuffix[3]   = { "", "m", "7" };
     const char* const rowLabels[3]    = { "MAJ", "MIN", "7TH" };
 
-    constexpr int editorW = 980;
-    constexpr int editorH = 590;
+    constexpr int editorW = 1040;
+    constexpr int editorH = 700;
     constexpr int headerH = 58;
 
     juce::String chordName (int pc, int type)
@@ -30,6 +31,16 @@ RetroLook::RetroLook()
     setColour (juce::ToggleButton::textColourId,        ui::cream);
     setColour (juce::ToggleButton::tickColourId,        ui::amber);
     setColour (juce::ToggleButton::tickDisabledColourId, ui::creamDim);
+
+    setColour (juce::ComboBox::backgroundColourId,           juce::Colour (0xff1a1714));
+    setColour (juce::ComboBox::textColourId,                 ui::cream);
+    setColour (juce::ComboBox::outlineColourId,              ui::amber.withAlpha (0.45f));
+    setColour (juce::ComboBox::arrowColourId,                ui::amber);
+    setColour (juce::ComboBox::focusedOutlineColourId,       ui::amber);
+    setColour (juce::PopupMenu::backgroundColourId,          ui::panel);
+    setColour (juce::PopupMenu::textColourId,                ui::cream);
+    setColour (juce::PopupMenu::highlightedBackgroundColourId, ui::amber);
+    setColour (juce::PopupMenu::highlightedTextColourId,     ui::ink);
 }
 
 void RetroLook::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,
@@ -150,103 +161,230 @@ void ChordGrid::mouseUp (const juce::MouseEvent&)
 }
 
 //==============================================================================
-int StrumPlate::indexAt (float y) const
+juce::Rectangle<float> PresetBar::cell (int i) const
 {
-    const auto area = getLocalBounds().toFloat().reduced (10.0f);
+    const auto area = getLocalBounds().toFloat();
+    const float gap = 8.0f;
+    const float w = (area.getWidth() - gap * (float) (chordharp::numPresets - 1)) / (float) chordharp::numPresets;
+    return { area.getX() + (float) i * (w + gap), area.getY(), w, area.getHeight() };
+}
+
+void PresetBar::paint (juce::Graphics& g)
+{
+    const int current = proc.currentPreset.load();
+
+    for (int i = 0; i < chordharp::numPresets; ++i)
+    {
+        const auto c = cell (i);
+        const bool on = (i == current);
+
+        g.setColour (on ? ui::amber : ui::panel);
+        g.fillRoundedRectangle (c, 8.0f);
+        g.setColour (on ? ui::amber.brighter (0.2f) : ui::amber.withAlpha (0.25f));
+        g.drawRoundedRectangle (c.reduced (0.5f), 8.0f, 1.0f);
+
+        g.setColour (on ? ui::ink.withAlpha (0.6f) : ui::creamDim.withAlpha (0.6f));
+        g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+        g.drawText (juce::String (i + 1).paddedLeft ('0', 2), c.withHeight (16.0f).translated (0.0f, 4.0f),
+                    juce::Justification::centred);
+
+        g.setColour (on ? ui::ink : ui::cream);
+        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.drawFittedText (juce::String::fromUTF8 (chordharp::presets[i].name),
+                          c.withTrimmedTop (16.0f).reduced (4.0f, 2.0f).toNearestInt(),
+                          juce::Justification::centred, 1, 0.8f);
+    }
+}
+
+void PresetBar::mouseDown (const juce::MouseEvent& e)
+{
+    for (int i = 0; i < chordharp::numPresets; ++i)
+        if (cell (i).contains (e.position))
+        {
+            proc.applyPreset (i);
+            repaint();
+            return;
+        }
+}
+
+//==============================================================================
+juce::Rectangle<float> StrumPad::playArea() const
+{
+    return getLocalBounds().toFloat().reduced (12.0f).withTrimmedBottom (14.0f);
+}
+
+int StrumPad::indexAt (float y) const
+{
+    const auto area = playArea();
     const float barH = area.getHeight() / (float) Engine::numPlate;
     const int idx = (int) std::floor ((area.getBottom() - y) / barH);
     return juce::jlimit (0, Engine::numPlate - 1, idx);
 }
 
-void StrumPlate::hit (int index)
+void StrumPad::hit (int index)
 {
     proc.sendUiMidi (juce::MidiMessage::noteOn (1, Engine::plateFirstKey + index, (juce::uint8) 100));
 }
 
-void StrumPlate::mouseDown (const juce::MouseEvent& e)
+void StrumPad::touch (juce::Point<float> pos, bool isNewTouch)
 {
-    last = indexAt (e.position.y);
-    hit (last);
-}
+    const auto area = playArea();
 
-void StrumPlate::mouseDrag (const juce::MouseEvent& e)
-{
-    const int idx = indexAt (e.position.y);
-    if (last < 0)
+    // Horizontal : timbre (envoyé en CC74, comme un contrôleur MPE)
+    const float x01 = juce::jlimit (0.0f, 1.0f, (pos.x - area.getX()) / area.getWidth());
+    const int cc = juce::roundToInt (x01 * 127.0f);
+    if (cc != lastCC)
     {
-        last = idx;
-        hit (idx);
-        return;
+        proc.sendUiMidi (juce::MidiMessage::controllerEvent (1, 74, cc));
+        lastCC = cc;
     }
-    if (idx == last)
-        return;
 
-    // on joue toutes les cases traversées, comme un vrai glissé de doigt
-    const int step = idx > last ? 1 : -1;
-    for (int i = last + step; ; i += step)
+    // Vertical : les notes de l'accord. On joue toutes les cases traversées, comme un vrai doigt.
+    const int idx = indexAt (pos.y);
+    if (isNewTouch || last < 0)
     {
-        hit (i);
-        if (i == idx) break;
+        hit (idx);
+    }
+    else if (idx != last)
+    {
+        const int step = idx > last ? 1 : -1;
+        for (int i = last + step; ; i += step)
+        {
+            hit (i);
+            if (i == idx) break;
+        }
     }
     last = idx;
+
+    finger = pos;
+    fingerAlpha = 1.0f;
+    touching = true;
 }
 
-void StrumPlate::mouseUp (const juce::MouseEvent&)
+void StrumPad::mouseDown (const juce::MouseEvent& e) { touch (e.position, true); }
+void StrumPad::mouseDrag (const juce::MouseEvent& e) { touch (e.position, false); }
+
+void StrumPad::mouseUp (const juce::MouseEvent&)
 {
     last = -1;
+    touching = false;
 }
 
-void StrumPlate::paint (juce::Graphics& g)
+void StrumPad::tick()
 {
-    const auto bounds = getLocalBounds().toFloat();
-    g.setColour (ui::panel);
-    g.fillRoundedRectangle (bounds, 12.0f);
-    g.setColour (ui::teal.withAlpha (0.25f));
-    g.drawRoundedRectangle (bounds.reduced (0.5f), 12.0f, 1.0f);
+    if (! touching)
+        fingerAlpha = fingerAlpha > 0.01f ? fingerAlpha * 0.8f : 0.0f;
+}
 
-    const auto area = bounds.reduced (10.0f);
+void StrumPad::paint (juce::Graphics& g)
+{
+    const auto b = getLocalBounds().toFloat();
+
+    // Surface "verre" d'une seule pièce
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff23312f), b.getX(), b.getY(),
+                                             juce::Colour (0xff151c1b), b.getX(), b.getBottom(), false));
+    g.fillRoundedRectangle (b, 14.0f);
+
+    // Teinte horizontale : doux (gauche) -> brillant (droite)
+    g.setGradientFill (juce::ColourGradient (ui::teal.withAlpha (0.0f), b.getX(), 0.0f,
+                                             ui::amber.withAlpha (0.08f), b.getRight(), 0.0f, false));
+    g.fillRoundedRectangle (b, 14.0f);
+
+    g.setColour (ui::teal.withAlpha (0.3f));
+    g.drawRoundedRectangle (b.reduced (0.5f), 14.0f, 1.0f);
+
+    const auto area = playArea();
     const float barH = area.getHeight() / (float) Engine::numPlate;
+    const float labelW = 30.0f;
     const int root = proc.engine.uiRoot.load();
     const int type = proc.engine.uiType.load();
 
     for (int i = 0; i < Engine::numPlate; ++i)
     {
+        const float yC = area.getBottom() - ((float) i + 0.5f) * barH;
         const float flash = proc.engine.uiPlateFlash[(size_t) i].load();
-        const juce::Rectangle<float> bar (area.getX(), area.getBottom() - (float) (i + 1) * barH, area.getWidth(), barH);
-        const auto cell = bar.reduced (2.0f, 2.0f);
+
+        // lignes guides discrètes
+        g.setColour (ui::cream.withAlpha (0.06f));
+        g.drawHorizontalLine (juce::roundToInt (yC), area.getX() + labelW, area.getRight());
 
         if (flash > 0.02f)
         {
-            g.setColour (ui::teal.withAlpha (0.25f * flash));
-            g.fillRoundedRectangle (cell.expanded (3.0f, 2.0f), 6.0f);
+            const juce::Rectangle<float> band (area.getX(), yC - barH * 1.3f, area.getWidth(), barH * 2.6f);
+            juce::ColourGradient cg (ui::teal.withAlpha (0.0f), 0.0f, band.getY(),
+                                     ui::teal.withAlpha (0.0f), 0.0f, band.getBottom(), false);
+            cg.addColour (0.5, ui::teal.withAlpha (0.5f * flash));
+            g.setGradientFill (cg);
+            g.fillRect (band);
+
+            g.setColour (ui::cream.withAlpha (0.85f * flash));
+            g.drawLine (area.getX() + labelW, yC, area.getRight(), yC, 1.5f);
         }
 
-        g.setColour (ui::teal.withAlpha (0.10f + 0.80f * flash));
-        g.fillRoundedRectangle (cell, 5.0f);
-        g.setColour (ui::teal.withAlpha (0.35f + 0.5f * flash));
-        g.drawRoundedRectangle (cell, 5.0f, 1.0f);
-
         const int note = Engine::plateNoteFor (root, type, i);
-        g.setColour (flash > 0.4f ? ui::ink : ui::creamDim);
-        g.setFont (juce::FontOptions (11.0f));
+        g.setColour (ui::creamDim.withAlpha (0.4f + 0.6f * flash));
+        g.setFont (juce::FontOptions (10.0f));
         g.drawText (juce::MidiMessage::getMidiNoteName (note, false, true, 5),
-                    cell.reduced (8.0f, 0.0f), juce::Justification::centredRight);
+                    juce::Rectangle<float> (area.getX(), yC - 7.0f, labelW, 14.0f), juce::Justification::centredLeft);
     }
+
+    // Doigt
+    if (fingerAlpha > 0.01f)
+    {
+        const float r = 30.0f;
+        g.setGradientFill (juce::ColourGradient (ui::cream.withAlpha (0.55f * fingerAlpha), finger.x, finger.y,
+                                                 ui::cream.withAlpha (0.0f), finger.x + r, finger.y, true));
+        g.fillEllipse (finger.x - r, finger.y - r, r * 2.0f, r * 2.0f);
+    }
+
+    // Repère du timbre actuel (CC74) en bas
+    const float bx = area.getX() + labelW + (area.getWidth() - labelW) * proc.engine.uiBright.load();
+    g.setColour (ui::amber.withAlpha (0.8f));
+    g.fillEllipse (bx - 3.0f, b.getBottom() - 15.0f, 6.0f, 6.0f);
+
+    g.setColour (ui::creamDim.withAlpha (0.6f));
+    g.setFont (juce::FontOptions (10.0f));
+    g.drawText ("doux", juce::Rectangle<float> (area.getX() + labelW, b.getBottom() - 20.0f, 60.0f, 16.0f),
+                juce::Justification::centredLeft);
+    g.drawText ("brillant", juce::Rectangle<float> (area.getRight() - 60.0f, b.getBottom() - 20.0f, 60.0f, 16.0f),
+                juce::Justification::centredRight);
 }
 
 //==============================================================================
 ChordHarpEditor::ChordHarpEditor (ChordHarpProcessor& p)
-    : AudioProcessorEditor (p), proc (p), grid (p), plate (p)
+    : AudioProcessorEditor (p), proc (p), presetBar (p), grid (p), pad (p)
 {
     setLookAndFeel (&look);
 
+    addAndMakeVisible (presetBar);
     addAndMakeVisible (grid);
-    addAndMakeVisible (plate);
+    addAndMakeVisible (pad);
 
     holdButton.setButtonText ("HOLD");
-    holdButton.setTooltip ("Garde l'accord après avoir relâché la touche");
+    holdButton.setTooltip ("Garde l'accord apr\xc3\xa8s avoir rel\xc3\xa2" "ch\xc3\xa9 la touche");
     addAndMakeVisible (holdButton);
     holdAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "hold", holdButton);
+
+    auto setupBox = [this] (juce::ComboBox& box, juce::Label& label, const juce::String& title,
+                            const char* const* names, int count, const char* paramId,
+                            std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>& att)
+    {
+        for (int i = 0; i < count; ++i)
+            box.addItem (juce::String::fromUTF8 (names[i]), i + 1);
+        addAndMakeVisible (box);
+
+        label.setText (title, juce::dontSendNotification);
+        label.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        label.setJustificationType (juce::Justification::centredLeft);
+        addAndMakeVisible (label);
+
+        att = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, paramId, box);
+    };
+
+    setupBox (plateVoiceBox, plateVoiceLabel, "SON DU SLIDE", chordharp::plateVoiceNames, chordharp::NumPlateVoices,
+              "plateVoice", plateVoiceAttachment);
+    setupBox (padVoiceBox, padVoiceLabel, "SON DE L'ACCORD", chordharp::padVoiceNames, chordharp::NumPadVoices,
+              "padVoice", padVoiceAttachment);
 
     const char* const ids[8] = { "chord", "bass", "strum", "decay", "tone", "vibrato", "reverb", "master" };
     const juce::String names[8] = { "ACCORD", "BASSE", "SLIDE", juce::CharPointer_UTF8 ("DUR\xc3\x89" "E"),
@@ -286,8 +424,16 @@ void ChordHarpEditor::timerCallback()
         const float v = f.load();
         f.store (v > 0.02f ? v * 0.82f : 0.0f);
     }
+
+    if (shownPreset != proc.currentPreset.load())
+    {
+        shownPreset = proc.currentPreset.load();
+        presetBar.repaint();
+    }
+
+    pad.tick();
     grid.repaint();
-    plate.repaint();
+    pad.repaint();
     repaint (0, 0, getWidth(), headerH);
 }
 
@@ -317,28 +463,38 @@ void ChordHarpEditor::paint (juce::Graphics& g)
     // Titres de sections
     g.setColour (ui::creamDim);
     g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-    g.drawText ("ACCORDS", grid.getX() + 52, headerH + 8, 120, 16, juce::Justification::centredLeft);
-    g.drawText ("SLIDE", plate.getX(), headerH + 8, plate.getWidth(), 16, juce::Justification::centred);
+    g.drawText ("PRESETS", presetBar.getX(), presetBar.getY() - 20, 200, 16, juce::Justification::centredLeft);
+    g.drawText ("ACCORDS", grid.getX() + 52, grid.getY() - 22, 120, 16, juce::Justification::centredLeft);
+    g.drawText ("SLIDE", pad.getX(), pad.getY() - 22, pad.getWidth(), 16, juce::Justification::centred);
 
-    // Fond de la zone des boutons
+    // Fond de la zone des réglages
     g.setColour (ui::panel);
-    g.fillRoundedRectangle (juce::Rectangle<int> (14, 444, getWidth() - 28, 112).toFloat(), 12.0f);
+    g.fillRoundedRectangle (juce::Rectangle<int> (16, 516, getWidth() - 32, 132).toFloat(), 12.0f);
+    g.setColour (ui::cream.withAlpha (0.08f));
+    g.drawVerticalLine (236, 530.0f, 634.0f);
 
     // Aide
     g.setColour (ui::creamDim.withAlpha (0.8f));
     g.setFont (juce::FontOptions (12.0f));
-    g.drawText ("MIDI (notation FL Studio) :  C2-B2 = majeur   |   C3-B3 = mineur   |   C4-B4 = 7e   |   C5-C6 = plaque   |   mod wheel = slide",
-                0, getHeight() - 30, getWidth(), 22, juce::Justification::centred);
+    g.drawText ("Pad SLIDE : haut/bas = notes, gauche/droite = timbre.   MIDI (FL Studio) : C2-B2 majeur | C3-B3 mineur | C4-B4 7e | C5-C6 plaque | mod wheel = slide | CC74 = timbre",
+                0, getHeight() - 40, getWidth(), 22, juce::Justification::centred);
 }
 
 void ChordHarpEditor::resized()
 {
-    const int top = headerH + 30;
-    grid.setBounds (16, top, 640, 340);
-    plate.setBounds (690, top, 270, 340);
-    holdButton.setBounds (grid.getRight() - 90, headerH + 4, 90, 24);
+    presetBar.setBounds (16, headerH + 30, getWidth() - 32, 50);
 
-    auto row = juce::Rectangle<int> (24, 450, getWidth() - 48, 102);
+    const int top = headerH + 30 + 50 + 34;
+    grid.setBounds (16, top, 660, 330);
+    pad.setBounds (700, top, getWidth() - 716, 330);
+    holdButton.setBounds (grid.getRight() - 90, top - 28, 90, 24);
+
+    plateVoiceLabel.setBounds (34, 528, 190, 16);
+    plateVoiceBox.setBounds (34, 546, 190, 28);
+    padVoiceLabel.setBounds (34, 584, 190, 16);
+    padVoiceBox.setBounds (34, 602, 190, 28);
+
+    auto row = juce::Rectangle<int> (248, 522, getWidth() - 248 - 28, 120);
     const int w = row.getWidth() / (int) knobs.size();
     for (auto& k : knobs)
     {

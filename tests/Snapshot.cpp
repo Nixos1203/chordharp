@@ -15,7 +15,9 @@ int main (int argc, char** argv)
     // Simule un La mineur tenu
     juce::MidiBuffer midi;
     midi.addEvent (juce::MidiMessage::noteOn (1, chordharp::Engine::chordKeyFor (9, chordharp::Minor), 0.8f), 0);
+    midi.addEvent (juce::MidiMessage::controllerEvent (1, 74, 90), 0);
     juce::AudioBuffer<float> buffer (2, 512);
+    proc.applyPreset (argc > 2 ? juce::String (argv[2]).getIntValue() : 2);
     proc.processBlock (buffer, midi);
 
     // Quelques cases de la plaque "allumées", comme pendant un slide

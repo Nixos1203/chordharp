@@ -25,11 +25,15 @@ public:
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 5.0; }
 
-    int getNumPrograms() override { return 1; }
-    int getCurrentProgram() override { return 0; }
-    void setCurrentProgram (int) override {}
-    const juce::String getProgramName (int) override { return {}; }
+    int getNumPrograms() override;
+    int getCurrentProgram() override { return currentPreset.load(); }
+    void setCurrentProgram (int index) override;
+    const juce::String getProgramName (int index) override;
     void changeProgramName (int, const juce::String&) override {}
+
+    /** Charge un preset (à appeler depuis le thread de l'interface). */
+    void applyPreset (int index);
+    std::atomic<int> currentPreset { 0 };
 
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
@@ -55,6 +59,8 @@ private:
     std::atomic<float>* pReverb = nullptr;
     std::atomic<float>* pMaster = nullptr;
     std::atomic<float>* pHold   = nullptr;
+    std::atomic<float>* pPlate  = nullptr;
+    std::atomic<float>* pPad    = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ChordHarpProcessor)
 };

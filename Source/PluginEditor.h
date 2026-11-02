@@ -23,6 +23,21 @@ public:
 };
 
 //==============================================================================
+/** Barre de presets de sons. */
+class PresetBar : public juce::Component
+{
+public:
+    explicit PresetBar (ChordHarpProcessor& p) : proc (p) {}
+
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+
+private:
+    juce::Rectangle<float> cell (int i) const;
+    ChordHarpProcessor& proc;
+};
+
+//==============================================================================
 /** Grille 3 x 12 de boutons d'accords, façon Omnichord. */
 class ChordGrid : public juce::Component
 {
@@ -42,23 +57,32 @@ private:
 };
 
 //==============================================================================
-/** La plaque tactile : glisser dessus joue les notes de l'accord en arpège. */
-class StrumPlate : public juce::Component
+/** Le pad de slide, d'une seule pièce comme la strumplate de l'Omnichord :
+    vertical = notes de l'accord (grave en bas), horizontal = timbre (doux à gauche, brillant à droite). */
+class StrumPad : public juce::Component
 {
 public:
-    explicit StrumPlate (ChordHarpProcessor& p) : proc (p) {}
+    explicit StrumPad (ChordHarpProcessor& p) : proc (p) {}
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
 
+    void tick();
+
 private:
+    juce::Rectangle<float> playArea() const;
     int indexAt (float y) const;
+    void touch (juce::Point<float> pos, bool isNewTouch);
     void hit (int index);
 
     ChordHarpProcessor& proc;
     int last = -1;
+    int lastCC = -1;
+    bool touching = false;
+    juce::Point<float> finger;
+    float fingerAlpha = 0.0f;
 };
 
 //==============================================================================
@@ -76,10 +100,16 @@ private:
 
     ChordHarpProcessor& proc;
     RetroLook look;
+    PresetBar presetBar;
     ChordGrid grid;
-    StrumPlate plate;
+    StrumPad pad;
+
     juce::ToggleButton holdButton;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> holdAttachment;
+
+    juce::Label plateVoiceLabel, padVoiceLabel;
+    juce::ComboBox plateVoiceBox, padVoiceBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> plateVoiceAttachment, padVoiceAttachment;
 
     struct Knob
     {
@@ -88,6 +118,8 @@ private:
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
     };
     std::array<Knob, 8> knobs;
+
+    int shownPreset = -1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ChordHarpEditor)
 };

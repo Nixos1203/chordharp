@@ -28,7 +28,9 @@ ChordHarp.app (Mac) / ChordHarp.exe (Windows) se lance sans DAW, pour tester vit
 
 COMMENT JOUER
 -------------
-- Clique un bouton d'accord (ou joue une touche MIDI), puis glisse la souris sur la plaque SLIDE.
+- Choisis un son dans PRESETS (ou mixe "Son du slide" et "Son de l'accord").
+- Clique un bouton d'accord (ou joue une touche MIDI), puis glisse la souris sur le pad SLIDE :
+  haut/bas = les notes, gauche/droite = le timbre (doux -> brillant).
 - La plaque joue toujours le dernier accord choisi, même après avoir relâché.
 - HOLD : l'accord tenu continue de sonner jusqu'au suivant.
 
@@ -38,3 +40,4 @@ Clavier MIDI (notation FL Studio, Do central = C5) :
   C4 a B4  -> accords de 7e
   C5 a C6  -> les 13 cases de la plaque, du grave a l'aigu
   Mod wheel -> balayer la plaque (enregistrable en automation)
+  CC74      -> timbre de la plaque
