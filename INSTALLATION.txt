@@ -1,0 +1,40 @@
+CHORDHARP - installation
+========================
+
+MAC
+---
+1. Copie ChordHarp.vst3 dans :       ~/Library/Audio/Plug-Ins/VST3/
+   (et ChordHarp.component dans :     ~/Library/Audio/Plug-Ins/Components/  si tu veux l'AU)
+   Astuce : dans le Finder, Aller > Aller au dossier...  puis colle le chemin.
+
+2. Le plugin n'est pas signé par Apple, donc macOS le bloque au premier lancement.
+   Ouvre le Terminal et colle ces deux lignes :
+
+   xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/ChordHarp.vst3
+   xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/ChordHarp.component
+
+3. Dans FL Studio : Options > Manage plugins > Find more plugins (scan).
+   ChordHarp apparaît dans les générateurs (Installed > Generators > VST3).
+
+WINDOWS
+-------
+1. Copie le dossier ChordHarp.vst3 dans :   C:\Program Files\Common Files\VST3\
+2. Dans FL Studio : Options > Manage plugins > Find more plugins (scan).
+3. Si Windows SmartScreen bloque ChordHarp.exe (version autonome) : "Informations complémentaires" > "Exécuter quand même".
+
+VERSION AUTONOME
+----------------
+ChordHarp.app (Mac) / ChordHarp.exe (Windows) se lance sans DAW, pour tester vite.
+
+COMMENT JOUER
+-------------
+- Clique un bouton d'accord (ou joue une touche MIDI), puis glisse la souris sur la plaque SLIDE.
+- La plaque joue toujours le dernier accord choisi, même après avoir relâché.
+- HOLD : l'accord tenu continue de sonner jusqu'au suivant.
+
+Clavier MIDI (notation FL Studio, Do central = C5) :
+  C2 a B2  -> accords majeurs   (la touche = la fondamentale)
+  C3 a B3  -> accords mineurs
+  C4 a B4  -> accords de 7e
+  C5 a C6  -> les 13 cases de la plaque, du grave a l'aigu
+  Mod wheel -> balayer la plaque (enregistrable en automation)
