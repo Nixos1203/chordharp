@@ -2,21 +2,48 @@
 #include "PluginEditor.h"
 #include "Presets.h"
 
+namespace
+{
+    juce::StringArray utf8Array (const char* const* names, int count)
+    {
+        juce::StringArray a;
+        for (int i = 0; i < count; ++i)
+            a.add (juce::String::fromUTF8 (names[i]));
+        return a;
+    }
+}
+
 ChordHarpProcessor::ChordHarpProcessor()
     : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "STATE", createLayout())
 {
-    pChord  = apvts.getRawParameterValue ("chord");
-    pBass   = apvts.getRawParameterValue ("bass");
-    pStrum  = apvts.getRawParameterValue ("strum");
-    pDecay  = apvts.getRawParameterValue ("decay");
-    pTone   = apvts.getRawParameterValue ("tone");
-    pVib    = apvts.getRawParameterValue ("vibrato");
-    pReverb = apvts.getRawParameterValue ("reverb");
-    pMaster = apvts.getRawParameterValue ("master");
-    pHold   = apvts.getRawParameterValue ("hold");
-    pPlate  = apvts.getRawParameterValue ("plateVoice");
-    pPad    = apvts.getRawParameterValue ("padVoice");
+    auto get = [this] (const char* id) { return apvts.getRawParameterValue (id); };
+
+    pChord      = get ("chord");
+    pBass       = get ("bass");
+    pStrum      = get ("strum");
+    pDecay      = get ("decay");
+    pTone       = get ("tone");
+    pVib        = get ("vibrato");
+    pReverb     = get ("reverb");
+    pMaster     = get ("master");
+    pHold       = get ("hold");
+    pPlate      = get ("plateVoice");
+    pPad        = get ("padVoice");
+    pLayer      = get ("layerVoice");
+    pLayerLevel = get ("layerLevel");
+    pLayerOct   = get ("layerOct");
+    pAttack     = get ("attack");
+    pCutoff     = get ("cutoff");
+    pReso       = get ("reso");
+    pLfoRate    = get ("lfoRate");
+    pLfoDepth   = get ("lfoDepth");
+    pDrive      = get ("drive");
+    pChorus     = get ("chorus");
+    pDelayDiv   = get ("delayDiv");
+    pDelayFb    = get ("delayFb");
+    pDelayMix   = get ("delayMix");
+    pRoom       = get ("roomSize");
 
     uiMidi.reset (44100.0);
 }
@@ -24,6 +51,8 @@ ChordHarpProcessor::ChordHarpProcessor()
 juce::AudioProcessorValueTreeState::ParameterLayout ChordHarpProcessor::createLayout()
 {
     using P = juce::AudioParameterFloat;
+    using C = juce::AudioParameterChoice;
+    using ID = juce::ParameterID;
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
     const auto unit = juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f);
@@ -31,25 +60,60 @@ juce::AudioProcessorValueTreeState::ParameterLayout ChordHarpProcessor::createLa
         [] (float v, int) { return juce::String (juce::roundToInt (v * 100.0f)) + " %"; });
     const auto secs = juce::AudioParameterFloatAttributes().withStringFromValueFunction (
         [] (float v, int) { return juce::String (v, 2) + " s"; });
+    const auto hz = juce::AudioParameterFloatAttributes().withStringFromValueFunction (
+        [] (float v, int) { return v < 1000.0f ? juce::String (juce::roundToInt (v)) + " Hz"
+                                               : juce::String (v / 1000.0f, 1) + " kHz"; });
+    const auto lfoHz = juce::AudioParameterFloatAttributes().withStringFromValueFunction (
+        [] (float v, int) { return juce::String (v, 2) + " Hz"; });
+
+    auto cutoffRange = juce::NormalisableRange<float> (100.0f, 20000.0f, 1.0f);
+    cutoffRange.setSkewForCentre (1500.0f);
+    auto lfoRange = juce::NormalisableRange<float> (0.02f, 10.0f, 0.01f);
+    lfoRange.setSkewForCentre (0.6f);
+    auto attackRange = juce::NormalisableRange<float> (0.0f, 2.0f, 0.001f);
+    attackRange.setSkewForCentre (0.25f);
 
     const auto& d = chordharp::presets[0];
 
-    juce::StringArray plateNames, padNames;
-    for (auto* n : chordharp::plateVoiceNames) plateNames.add (juce::String::fromUTF8 (n));
-    for (auto* n : chordharp::padVoiceNames)   padNames.add (juce::String::fromUTF8 (n));
+    juce::StringArray layerNames { juce::String::fromUTF8 ("Aucune") };
+    layerNames.addArray (utf8Array (chordharp::plateVoiceNames, chordharp::NumPlateVoices));
 
-    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "plateVoice", 1 }, "Son slide", plateNames, d.plateVoice));
-    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "padVoice", 1 }, "Son accord", padNames, d.padVoice));
-    layout.add (std::make_unique<P> (juce::ParameterID { "chord", 1 },   "Accord",  unit, d.chord, pct));
-    layout.add (std::make_unique<P> (juce::ParameterID { "bass", 1 },    "Basse",   unit, d.bass, pct));
-    layout.add (std::make_unique<P> (juce::ParameterID { "strum", 1 },   "Slide",   unit, d.strum, pct));
-    layout.add (std::make_unique<P> (juce::ParameterID { "decay", 1 },   "Duree",
-                                     juce::NormalisableRange<float> (0.1f, 5.0f, 0.01f, 0.5f), d.decay, secs));
-    layout.add (std::make_unique<P> (juce::ParameterID { "tone", 1 },    "Timbre",  unit, d.tone, pct));
-    layout.add (std::make_unique<P> (juce::ParameterID { "vibrato", 1 }, "Vibrato", unit, d.vibrato, pct));
-    layout.add (std::make_unique<P> (juce::ParameterID { "reverb", 1 },  "Reverb",  unit, d.reverb, pct));
-    layout.add (std::make_unique<P> (juce::ParameterID { "master", 1 },  "Volume",  unit, 0.8f, pct));
-    layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "hold", 1 }, "Hold", false));
+    // Sources
+    layout.add (std::make_unique<C> (ID { "plateVoice", 1 }, "Son slide",
+                                     utf8Array (chordharp::plateVoiceNames, chordharp::NumPlateVoices), d.plate));
+    layout.add (std::make_unique<C> (ID { "layerVoice", 1 }, "Couche", layerNames, d.layer + 1));
+    layout.add (std::make_unique<C> (ID { "layerOct", 1 }, "Octave couche",
+                                     utf8Array (chordharp::layerOctaveNames, 4), d.layerOct + 1));
+    layout.add (std::make_unique<C> (ID { "padVoice", 1 }, "Son accord",
+                                     utf8Array (chordharp::padVoiceNames, chordharp::NumPadVoices), d.pad));
+
+    // Niveaux et jeu
+    layout.add (std::make_unique<P> (ID { "chord", 1 },      "Accord",       unit, d.chord, pct));
+    layout.add (std::make_unique<P> (ID { "bass", 1 },       "Basse",        unit, d.bass, pct));
+    layout.add (std::make_unique<P> (ID { "strum", 1 },      "Slide",        unit, d.strum, pct));
+    layout.add (std::make_unique<P> (ID { "layerLevel", 1 }, "Niveau couche", unit, d.layerLevel, pct));
+    layout.add (std::make_unique<P> (ID { "attack", 1 },     "Attaque",      attackRange, d.attack, secs));
+    layout.add (std::make_unique<P> (ID { "decay", 1 },      "Duree",
+                                     juce::NormalisableRange<float> (0.1f, 6.0f, 0.01f, 0.5f), d.decay, secs));
+    layout.add (std::make_unique<P> (ID { "tone", 1 },       "Timbre",       unit, d.tone, pct));
+    layout.add (std::make_unique<P> (ID { "vibrato", 1 },    "Vibrato",      unit, d.vibrato, pct));
+
+    // Effets
+    layout.add (std::make_unique<P> (ID { "cutoff", 1 },     "Filtre",       cutoffRange, d.cutoff, hz));
+    layout.add (std::make_unique<P> (ID { "reso", 1 },       "Resonance",    unit, d.reso, pct));
+    layout.add (std::make_unique<P> (ID { "lfoRate", 1 },    "LFO vitesse",  lfoRange, d.lfoRate, lfoHz));
+    layout.add (std::make_unique<P> (ID { "lfoDepth", 1 },   "LFO profondeur", unit, d.lfoDepth, pct));
+    layout.add (std::make_unique<P> (ID { "drive", 1 },      "Drive",        unit, d.drive, pct));
+    layout.add (std::make_unique<P> (ID { "chorus", 1 },     "Chorus",       unit, d.chorus, pct));
+    layout.add (std::make_unique<C> (ID { "delayDiv", 1 },   "Delay",
+                                     utf8Array (chordharp::delayDivNames, chordharp::numDelayDivs), d.delayDiv));
+    layout.add (std::make_unique<P> (ID { "delayFb", 1 },    "Delay feedback", unit, d.delayFb, pct));
+    layout.add (std::make_unique<P> (ID { "delayMix", 1 },   "Delay mix",    unit, d.delayMix, pct));
+    layout.add (std::make_unique<P> (ID { "reverb", 1 },     "Reverb",       unit, d.reverb, pct));
+    layout.add (std::make_unique<P> (ID { "roomSize", 1 },   "Taille reverb",
+                                     juce::NormalisableRange<float> (0.3f, 0.97f, 0.001f), d.room, pct));
+    layout.add (std::make_unique<P> (ID { "master", 1 },     "Volume",       unit, 0.8f, pct));
+    layout.add (std::make_unique<juce::AudioParameterBool> (ID { "hold", 1 }, "Hold", false));
 
     return layout;
 }
@@ -87,17 +151,36 @@ void ChordHarpProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     combined.addEvents (uiBuffer, 0, n, 0);
 
     chordharp::Params p;
-    p.chordLevel = pChord->load();
-    p.bassLevel  = pBass->load();
-    p.strumLevel = pStrum->load();
-    p.strumDecay = pDecay->load();
-    p.strumTone  = pTone->load();
-    p.vibrato    = pVib->load();
-    p.reverb     = pReverb->load();
-    p.master     = pMaster->load();
-    p.hold       = pHold->load() > 0.5f;
-    p.plateVoice = juce::roundToInt (pPlate->load());
-    p.padVoice   = juce::roundToInt (pPad->load());
+    p.chordLevel    = pChord->load();
+    p.bassLevel     = pBass->load();
+    p.strumLevel    = pStrum->load();
+    p.strumDecay    = pDecay->load();
+    p.strumTone     = pTone->load();
+    p.vibrato       = pVib->load();
+    p.reverb        = pReverb->load();
+    p.master        = pMaster->load();
+    p.hold          = pHold->load() > 0.5f;
+    p.plateVoice    = juce::roundToInt (pPlate->load());
+    p.padVoice      = juce::roundToInt (pPad->load());
+    p.layerVoice    = juce::roundToInt (pLayer->load()) - 1;
+    p.layerLevel    = pLayerLevel->load();
+    p.layerOctave   = juce::roundToInt (pLayerOct->load()) - 1;
+    p.attack        = pAttack->load();
+    p.cutoff        = pCutoff->load();
+    p.resonance     = pReso->load();
+    p.lfoRate       = pLfoRate->load();
+    p.lfoDepth      = pLfoDepth->load();
+    p.drive         = pDrive->load();
+    p.chorusMix     = pChorus->load();
+    p.delayDiv      = juce::roundToInt (pDelayDiv->load());
+    p.delayFeedback = pDelayFb->load();
+    p.delayMix      = pDelayMix->load();
+    p.roomSize      = pRoom->load();
+
+    if (auto* ph = getPlayHead())
+        if (auto pos = ph->getPosition())
+            if (auto bpm = pos->getBpm())
+                p.bpm = *bpm;
 
     engine.process (buffer, combined, p);
     midi.clear();
@@ -130,15 +213,29 @@ void ChordHarpProcessor::applyPreset (int index)
             param->setValueNotifyingHost (param->convertTo0to1 (value));
     };
 
-    set ("plateVoice", (float) pr.plateVoice);
-    set ("padVoice",   (float) pr.padVoice);
+    set ("plateVoice", (float) pr.plate);
+    set ("padVoice",   (float) pr.pad);
+    set ("layerVoice", (float) (pr.layer + 1));
+    set ("layerLevel", pr.layerLevel);
+    set ("layerOct",   (float) (pr.layerOct + 1));
     set ("chord",      pr.chord);
     set ("bass",       pr.bass);
     set ("strum",      pr.strum);
+    set ("attack",     pr.attack);
     set ("decay",      pr.decay);
     set ("tone",       pr.tone);
     set ("vibrato",    pr.vibrato);
+    set ("cutoff",     pr.cutoff);
+    set ("reso",       pr.reso);
+    set ("lfoRate",    pr.lfoRate);
+    set ("lfoDepth",   pr.lfoDepth);
+    set ("drive",      pr.drive);
+    set ("chorus",     pr.chorus);
+    set ("delayDiv",   (float) pr.delayDiv);
+    set ("delayFb",    pr.delayFb);
+    set ("delayMix",   pr.delayMix);
     set ("reverb",     pr.reverb);
+    set ("roomSize",   pr.room);
 
     currentPreset = index;
 }

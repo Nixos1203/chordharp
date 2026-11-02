@@ -11,9 +11,13 @@ namespace
     const char* const typeSuffix[3]   = { "", "m", "7" };
     const char* const rowLabels[3]    = { "MAJ", "MIN", "7TH" };
 
-    constexpr int editorW = 1040;
-    constexpr int editorH = 700;
+    constexpr int editorW = 1100;
+    constexpr int editorH = 900;
     constexpr int headerH = 58;
+    constexpr int panelH = 136;
+    constexpr int sourcesY = 568;
+    constexpr int fxY = 724;
+    constexpr int comboColW = 200;
 
     juce::String chordName (int pc, int type)
     {
@@ -164,9 +168,12 @@ void ChordGrid::mouseUp (const juce::MouseEvent&)
 juce::Rectangle<float> PresetBar::cell (int i) const
 {
     const auto area = getLocalBounds().toFloat();
+    const int perRow = 10;
     const float gap = 8.0f;
-    const float w = (area.getWidth() - gap * (float) (chordharp::numPresets - 1)) / (float) chordharp::numPresets;
-    return { area.getX() + (float) i * (w + gap), area.getY(), w, area.getHeight() };
+    const float w = (area.getWidth() - gap * (float) (perRow - 1)) / (float) perRow;
+    const float h = (area.getHeight() - gap) * 0.5f;
+    const int row = i / perRow, col = i % perRow;
+    return { area.getX() + (float) col * (w + gap), area.getY() + (float) row * (h + gap), w, h };
 }
 
 void PresetBar::paint (juce::Graphics& g)
@@ -183,16 +190,16 @@ void PresetBar::paint (juce::Graphics& g)
         g.setColour (on ? ui::amber.brighter (0.2f) : ui::amber.withAlpha (0.25f));
         g.drawRoundedRectangle (c.reduced (0.5f), 8.0f, 1.0f);
 
-        g.setColour (on ? ui::ink.withAlpha (0.6f) : ui::creamDim.withAlpha (0.6f));
-        g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
-        g.drawText (juce::String (i + 1).paddedLeft ('0', 2), c.withHeight (16.0f).translated (0.0f, 4.0f),
-                    juce::Justification::centred);
+        g.setColour (on ? ui::ink.withAlpha (0.65f) : ui::teal.withAlpha (0.75f));
+        g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+        g.drawText (juce::String::fromUTF8 (chordharp::presets[i].category),
+                    c.withHeight (14.0f).translated (0.0f, 4.0f), juce::Justification::centred);
 
         g.setColour (on ? ui::ink : ui::cream);
-        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
         g.drawFittedText (juce::String::fromUTF8 (chordharp::presets[i].name),
                           c.withTrimmedTop (16.0f).reduced (4.0f, 2.0f).toNearestInt(),
-                          juce::Justification::centred, 1, 0.8f);
+                          juce::Justification::centred, 2, 0.85f);
     }
 }
 
@@ -365,50 +372,75 @@ ChordHarpEditor::ChordHarpEditor (ChordHarpProcessor& p)
     addAndMakeVisible (holdButton);
     holdAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "hold", holdButton);
 
-    auto setupBox = [this] (juce::ComboBox& box, juce::Label& label, const juce::String& title,
-                            const char* const* names, int count, const char* paramId,
-                            std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>& att)
+    auto items = [] (const char* const* names, int count)
     {
-        for (int i = 0; i < count; ++i)
-            box.addItem (juce::String::fromUTF8 (names[i]), i + 1);
-        addAndMakeVisible (box);
-
-        label.setText (title, juce::dontSendNotification);
-        label.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-        label.setJustificationType (juce::Justification::centredLeft);
-        addAndMakeVisible (label);
-
-        att = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, paramId, box);
+        juce::StringArray a;
+        for (int i = 0; i < count; ++i) a.add (juce::String::fromUTF8 (names[i]));
+        return a;
     };
 
-    setupBox (plateVoiceBox, plateVoiceLabel, "SON DU SLIDE", chordharp::plateVoiceNames, chordharp::NumPlateVoices,
-              "plateVoice", plateVoiceAttachment);
-    setupBox (padVoiceBox, padVoiceLabel, "SON DE L'ACCORD", chordharp::padVoiceNames, chordharp::NumPadVoices,
-              "padVoice", padVoiceAttachment);
+    juce::StringArray layerItems { juce::String::fromUTF8 ("Aucune") };
+    layerItems.addArray (items (chordharp::plateVoiceNames, chordharp::NumPlateVoices));
 
-    const char* const ids[8] = { "chord", "bass", "strum", "decay", "tone", "vibrato", "reverb", "master" };
-    const juce::String names[8] = { "ACCORD", "BASSE", "SLIDE", juce::CharPointer_UTF8 ("DUR\xc3\x89" "E"),
-                                    "TIMBRE", "VIBRATO", "REVERB", "VOLUME" };
+    setupCombo (plateCombo,    "SON DU SLIDE", items (chordharp::plateVoiceNames, chordharp::NumPlateVoices), "plateVoice");
+    setupCombo (layerCombo,    "COUCHE",       layerItems, "layerVoice");
+    setupCombo (layerOctCombo, "OCTAVE",       items (chordharp::layerOctaveNames, 4), "layerOct");
+    setupCombo (padCombo,      "SON DE L'ACCORD", items (chordharp::padVoiceNames, chordharp::NumPadVoices), "padVoice");
+    setupCombo (delayCombo,    "DELAY",        items (chordharp::delayDivNames, chordharp::numDelayDivs), "delayDiv");
 
-    for (size_t i = 0; i < knobs.size(); ++i)
-    {
-        auto& k = knobs[i];
-        k.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 18);
-        k.slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-        k.slider.setColour (juce::Slider::textBoxTextColourId, ui::cream);
-        addAndMakeVisible (k.slider);
+    const char* const srcIds[8] = { "chord", "bass", "strum", "layerLevel", "attack", "decay", "tone", "vibrato" };
+    const juce::String srcNames[8] = { "ACCORD", "BASSE", "SLIDE", "COUCHE", "ATTAQUE",
+                                       juce::CharPointer_UTF8 ("DUR\xc3\x89" "E"), "TIMBRE", "VIBRATO" };
+    for (size_t i = 0; i < sourceKnobs.size(); ++i)
+        setupKnob (sourceKnobs[i], srcNames[i], srcIds[i]);
 
-        k.label.setText (names[i], juce::dontSendNotification);
-        k.label.setJustificationType (juce::Justification::centred);
-        k.label.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-        addAndMakeVisible (k.label);
+    const char* const fxIds[11] = { "cutoff", "reso", "lfoRate", "lfoDepth", "drive", "chorus",
+                                    "delayFb", "delayMix", "reverb", "roomSize", "master" };
+    const juce::String fxNames[11] = { "FILTRE", juce::CharPointer_UTF8 ("R\xc3\x89SO"), "LFO VIT.", "LFO PROF.",
+                                       "DRIVE", "CHORUS", "FEEDBACK", "MIX DELAY", "REVERB", "TAILLE", "VOLUME" };
+    for (size_t i = 0; i < fxKnobs.size(); ++i)
+        setupKnob (fxKnobs[i], fxNames[i], fxIds[i]);
 
-        k.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, ids[i], k.slider);
-    }
-
-    setSize (editorW, editorH);
+    setResizable (true, true);
+    setResizeLimits (juce::roundToInt (editorW * 0.55f), juce::roundToInt (editorH * 0.55f),
+                     juce::roundToInt (editorW * 1.4f),  juce::roundToInt (editorH * 1.4f));
+    getConstrainer()->setFixedAspectRatio ((double) editorW / (double) editorH);
+    setSize (juce::roundToInt (editorW * 0.8f), juce::roundToInt (editorH * 0.8f));
     startTimerHz (30);
+}
+
+float ChordHarpEditor::uiScale() const
+{
+    return (float) getWidth() / (float) editorW;
+}
+
+void ChordHarpEditor::setupCombo (Combo& c, const juce::String& title, const juce::StringArray& itemNames, const char* paramId)
+{
+    c.box.addItemList (itemNames, 1);
+    addAndMakeVisible (c.box);
+
+    c.label.setText (title, juce::dontSendNotification);
+    c.label.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    c.label.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible (c.label);
+
+    c.attachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, paramId, c.box);
+}
+
+void ChordHarpEditor::setupKnob (Knob& k, const juce::String& title, const char* paramId)
+{
+    k.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 74, 18);
+    k.slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+    k.slider.setColour (juce::Slider::textBoxTextColourId, ui::cream);
+    addAndMakeVisible (k.slider);
+
+    k.label.setText (title, juce::dontSendNotification);
+    k.label.setJustificationType (juce::Justification::centred);
+    k.label.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    addAndMakeVisible (k.label);
+
+    k.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, paramId, k.slider);
 }
 
 ChordHarpEditor::~ChordHarpEditor()
@@ -434,18 +466,19 @@ void ChordHarpEditor::timerCallback()
     pad.tick();
     grid.repaint();
     pad.repaint();
-    repaint (0, 0, getWidth(), headerH);
+    repaint (0, 0, getWidth(), juce::roundToInt ((float) headerH * uiScale()) + 1);
 }
 
 void ChordHarpEditor::paint (juce::Graphics& g)
 {
     g.fillAll (ui::bg);
+    g.addTransform (juce::AffineTransform::scale (uiScale()));
 
     // En-tête
     g.setColour (ui::panel);
-    g.fillRect (0, 0, getWidth(), headerH);
+    g.fillRect (0, 0, editorW, headerH);
     g.setColour (ui::amber);
-    g.fillRect (0, headerH - 3, getWidth(), 3);
+    g.fillRect (0, headerH - 3, editorW, 3);
 
     g.setColour (ui::cream);
     g.setFont (juce::FontOptions (30.0f, juce::Font::bold));
@@ -458,7 +491,7 @@ void ChordHarpEditor::paint (juce::Graphics& g)
     g.setColour (held ? ui::amber : ui::creamDim);
     g.setFont (juce::FontOptions (28.0f, juce::Font::bold));
     g.drawText (chordName (proc.engine.uiRoot.load(), proc.engine.uiType.load()),
-                getWidth() - 200, 8, 176, 40, juce::Justification::centredRight);
+                editorW - 200, 8, 176, 40, juce::Justification::centredRight);
 
     // Titres de sections
     g.setColour (ui::creamDim);
@@ -467,39 +500,78 @@ void ChordHarpEditor::paint (juce::Graphics& g)
     g.drawText ("ACCORDS", grid.getX() + 52, grid.getY() - 22, 120, 16, juce::Justification::centredLeft);
     g.drawText ("SLIDE", pad.getX(), pad.getY() - 22, pad.getWidth(), 16, juce::Justification::centred);
 
-    // Fond de la zone des réglages
-    g.setColour (ui::panel);
-    g.fillRoundedRectangle (juce::Rectangle<int> (16, 516, getWidth() - 32, 132).toFloat(), 12.0f);
+    // Panneaux de réglages
+    for (auto y : { sourcesY, fxY })
+    {
+        g.setColour (ui::panel);
+        g.fillRoundedRectangle (juce::Rectangle<int> (16, y, editorW - 32, panelH).toFloat(), 12.0f);
+    }
     g.setColour (ui::cream.withAlpha (0.08f));
-    g.drawVerticalLine (236, 530.0f, 634.0f);
+    g.drawVerticalLine (comboColW + 30, (float) sourcesY + 12.0f, (float) (sourcesY + panelH - 12));
+    g.drawVerticalLine (comboColW + 30, (float) fxY + 12.0f, (float) (fxY + panelH - 12));
+
+    g.setColour (ui::amber.withAlpha (0.8f));
+    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    g.drawText ("SOURCES", 28, sourcesY - 18, 200, 16, juce::Justification::centredLeft);
+    g.drawText ("EFFETS DU SLIDE  /  GLOBAL", 28, fxY - 18, 300, 16, juce::Justification::centredLeft);
 
     // Aide
     g.setColour (ui::creamDim.withAlpha (0.8f));
     g.setFont (juce::FontOptions (12.0f));
     g.drawText ("Pad SLIDE : haut/bas = notes, gauche/droite = timbre.   MIDI (FL Studio) : C2-B2 majeur | C3-B3 mineur | C4-B4 7e | C5-C6 plaque | mod wheel = slide | CC74 = timbre",
-                0, getHeight() - 40, getWidth(), 22, juce::Justification::centred);
+                0, editorH - 32, editorW, 22, juce::Justification::centred);
 }
 
 void ChordHarpEditor::resized()
 {
-    presetBar.setBounds (16, headerH + 30, getWidth() - 32, 50);
+    presetBar.setBounds (16, headerH + 30, editorW - 32, 104);
 
-    const int top = headerH + 30 + 50 + 34;
-    grid.setBounds (16, top, 660, 330);
-    pad.setBounds (700, top, getWidth() - 716, 330);
+    const int top = presetBar.getBottom() + 34;
+    grid.setBounds (16, top, 680, 300);
+    pad.setBounds (720, top, editorW - 736, 300);
     holdButton.setBounds (grid.getRight() - 90, top - 28, 90, 24);
 
-    plateVoiceLabel.setBounds (34, 528, 190, 16);
-    plateVoiceBox.setBounds (34, 546, 190, 28);
-    padVoiceLabel.setBounds (34, 584, 190, 16);
-    padVoiceBox.setBounds (34, 602, 190, 28);
-
-    auto row = juce::Rectangle<int> (248, 522, getWidth() - 248 - 28, 120);
-    const int w = row.getWidth() / (int) knobs.size();
-    for (auto& k : knobs)
+    // Panneau sources : 3 menus + 8 boutons
     {
-        auto cell = row.removeFromLeft (w);
-        k.label.setBounds (cell.removeFromTop (16));
-        k.slider.setBounds (cell);
+        const int x = 30, y = sourcesY + 10;
+        plateCombo.label.setBounds (x, y, comboColW, 14);
+        plateCombo.box.setBounds   (x, y + 15, comboColW, 24);
+        layerCombo.label.setBounds (x, y + 42, comboColW - 80, 14);
+        layerCombo.box.setBounds   (x, y + 57, comboColW - 80, 24);
+        layerOctCombo.label.setBounds (x + comboColW - 74, y + 42, 74, 14);
+        layerOctCombo.box.setBounds   (x + comboColW - 74, y + 57, 74, 24);
+        padCombo.label.setBounds   (x, y + 84, comboColW, 14);
+        padCombo.box.setBounds     (x, y + 99, comboColW, 24);
+
+        auto row = juce::Rectangle<int> (comboColW + 44, sourcesY + 6, editorW - comboColW - 44 - 28, panelH - 12);
+        const int w = row.getWidth() / (int) sourceKnobs.size();
+        for (auto& k : sourceKnobs)
+        {
+            auto cell = row.removeFromLeft (w);
+            k.label.setBounds (cell.removeFromTop (16));
+            k.slider.setBounds (cell);
+        }
     }
+
+    // Panneau effets : menu delay + 11 boutons
+    {
+        delayCombo.label.setBounds (30, fxY + 40, comboColW, 14);
+        delayCombo.box.setBounds   (30, fxY + 55, comboColW, 24);
+
+        auto row = juce::Rectangle<int> (comboColW + 44, fxY + 6, editorW - comboColW - 44 - 28, panelH - 12);
+        const int w = row.getWidth() / (int) fxKnobs.size();
+        for (auto& k : fxKnobs)
+        {
+            auto cell = row.removeFromLeft (w);
+            k.label.setBounds (cell.removeFromTop (16));
+            k.slider.setBounds (cell);
+        }
+    }
+
+    // Mise à l'échelle : tout est placé en coordonnées "design", puis agrandi/réduit
+    const auto t = juce::AffineTransform::scale (uiScale());
+    for (auto* c : getChildren())
+        if (dynamic_cast<juce::ResizableCornerComponent*> (c) == nullptr
+             && dynamic_cast<juce::ResizableBorderComponent*> (c) == nullptr)
+            c->setTransform (t);
 }

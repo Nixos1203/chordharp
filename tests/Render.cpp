@@ -148,7 +148,7 @@ int main (int argc, char** argv)
     }
 
     // Démo : chaque preset joue deux accords avec des slides
-    const double seg = 3.2;
+    const double seg = 4.0;
     const int prog[][2] = { { 9, Minor }, { 5, Major }, { 0, Major }, { 7, Major }, { 2, Minor },
                             { 9, Minor }, { 5, Major }, { 0, Major }, { 7, Seventh }, { 4, Minor } };
     Events ev;
@@ -167,10 +167,12 @@ int main (int argc, char** argv)
         ev.push_back ({ t + seg * 0.5 + 1.0, juce::MidiMessage::noteOn (1, Engine::plateFirstKey + 10, 0.8f) });
     }
 
-    const double total = numPresets * seg + 4.0;
+    const double total = numPresets * seg + 5.0;
     auto out = renderEvents (ev, total, [seg] (double time)
     {
-        return paramsForPreset (juce::jmin (numPresets - 1, (int) (time / seg)));
+        auto p = paramsForPreset (juce::jmin (numPresets - 1, (int) (time / seg)));
+        p.bpm = 128.0;
+        return p;
     });
 
     float peak = 0.0f;

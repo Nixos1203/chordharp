@@ -26,7 +26,7 @@ int main (int argc, char** argv)
         proc.engine.uiPlateFlash[(size_t) i].store (flashes[i]);
 
     std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
-    const auto img = editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.5f);
+    const auto img = editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.5f / 0.8f * 0.8f);
 
     const juce::File out = juce::File::getCurrentWorkingDirectory().getChildFile (argc > 1 ? argv[1] : "snapshot.png");
     out.deleteFile();

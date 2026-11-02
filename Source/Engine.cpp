@@ -117,6 +117,10 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     sr = sampleRate;
     maxBlock = juce::jmax (1, maxBlockSize);
     mix.setSize (2, maxBlock);
+    slide.setSize (2, maxBlock);
+
+    delayL.assign ((size_t) (2.1 * sr) + 4, 0.0f);
+    delayR.assign (delayL.size(), 0.0f);
 
     ksMemory.assign (plucks.size() * (size_t) ksSize, 0.0f);
     for (size_t i = 0; i < plucks.size(); ++i)
@@ -130,8 +134,11 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     chorus.setFeedback (0.0f);
     chorus.setMix (0.3f);
 
+    filter.prepare (spec);
+    filter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
+
     reverb.prepare (spec);
-    lastReverb = -1.0f;
+    lastReverb = lastRoom = -1.0f;
 
     for (auto& v : pads)   v.adsr.setSampleRate (sr);
     for (auto& v : basses) v.adsr.setSampleRate (sr);
@@ -150,6 +157,11 @@ void Engine::reset()
     uiBright = 0.5f;
     chorus.reset();
     reverb.reset();
+    filter.reset();
+    std::fill (delayL.begin(), delayL.end(), 0.0f);
+    std::fill (delayR.begin(), delayR.end(), 0.0f);
+    delayWrite = 0;
+    delayFbLp = 0.0f;
     uiHeld = false;
 }
 
@@ -238,8 +250,22 @@ void Engine::triggerPlate (int index, float velocity)
 {
     index = juce::jlimit (0, numPlate - 1, index);
     const int note  = plateNoteFor (root, type, index);
-    const int model = juce::jlimit (0, NumPlateVoices - 1, p.plateVoice);
+    const float pan = -0.55f + 1.1f * (float) index / (float) (numPlate - 1);
 
+    startPluck (juce::jlimit (0, NumPlateVoices - 1, p.plateVoice), note, velocity, 1.0f, pan, 0.0f);
+
+    if (p.layerVoice >= 0 && p.layerLevel > 0.001f)
+    {
+        const int layerNote = juce::jlimit (24, 120, note + 12 * p.layerOctave);
+        startPluck (juce::jlimit (0, NumPlateVoices - 1, p.layerVoice), layerNote, velocity, p.layerLevel,
+                    -pan * 0.7f, p.layerOctave == 0 ? 7.0f : 0.0f);
+    }
+
+    uiPlateFlash[(size_t) index].store (1.0f);
+}
+
+void Engine::startPluck (int model, int note, float velocity, float level, float pan, float detuneCents)
+{
     Pluck* slot = &plucks[0];
     for (auto& v : plucks)
     {
@@ -252,7 +278,7 @@ void Engine::triggerPlate (int index, float velocity)
 
     v.active    = true;
     v.model     = model;
-    v.freq      = (float) midiToHz (note);
+    v.freq      = (float) (midiToHz (note) * std::pow (2.0, detuneCents / 1200.0));
     v.inc       = v.freq / sr;
     v.minc      = v.inc * plateModRatio[model];
     v.phase     = 0.0;
@@ -260,11 +286,12 @@ void Engine::triggerPlate (int index, float velocity)
     v.env       = 1.0f;
     v.envFast   = 1.0f;
     v.att       = 0.0f;
+    v.attStep   = (float) (1.0 / (juce::jmax (0.0015, (double) p.attack) * sr));
     v.lp        = 0.0f;
     v.lp2       = 0.0f;
-    v.decay     = (float) std::exp (-6.9 / (decaySec * sr));   // -60 dB après decaySec
+    v.decay     = (float) std::exp (-6.9 / ((decaySec + p.attack) * sr));   // -60 dB après decaySec
     v.decayFast = (float) std::exp (-6.9 / (plateFastTime[model] * sr));
-    v.vel       = 0.35f + 0.65f * velocity;
+    v.vel       = (0.35f + 0.65f * velocity) * level;
 
     if (isPlucked (model))
     {
@@ -325,16 +352,13 @@ void Engine::triggerPlate (int index, float velocity)
         const double lpMag = v.ksA / std::sqrt (1.0 - 2.0 * b * std::cos (w) + b * b);
         v.ksGain   = (float) juce::jmin (0.9995, std::pow (10.0, -3.0 / (decaySec * v.freq)) / lpMag);
         v.exLp     = 0.0f;
-        v.decay    = (float) std::exp (-6.9 / (decaySec * 1.4 * sr));
+        v.decay    = (float) std::exp (-6.9 / ((decaySec * 1.4 + p.attack) * sr));
     }
 
-    const float pan   = -0.55f + 1.1f * (float) index / (float) (numPlate - 1);
-    const float angle = (pan + 1.0f) * 0.25f * juce::MathConstants<float>::pi;
+    const float angle = (juce::jlimit (-1.0f, 1.0f, pan) + 1.0f) * 0.25f * juce::MathConstants<float>::pi;
     v.gainL = std::cos (angle);
     v.gainR = std::sin (angle);
     v.age   = ++ageCounter;
-
-    uiPlateFlash[(size_t) index].store (1.0f);
 }
 
 //==============================================================================
@@ -523,7 +547,7 @@ float Engine::renderPluck (Pluck& v, double vib, float lfo01, float t) noexcept
     wrap (v.phase);
     wrap (v.mphase);
 
-    v.att = juce::jmin (1.0f, v.att + (float) (1.0 / (0.0015 * sr)));
+    v.att = juce::jmin (1.0f, v.att + v.attStep);
     const float out = s * v.env * v.att * v.vel;
 
     v.env     *= v.decay;
@@ -613,8 +637,10 @@ float Engine::renderPad (Pad& v, double vib) noexcept
 
 void Engine::render (int start, int end)
 {
-    auto* L = mix.getWritePointer (0);
-    auto* R = mix.getWritePointer (1);
+    auto* L  = mix.getWritePointer (0);
+    auto* R  = mix.getWritePointer (1);
+    auto* SL = slide.getWritePointer (0);
+    auto* SR = slide.getWritePointer (1);
 
     const float strumGain = p.strumLevel * 0.30f;
     const float padGain   = p.chordLevel * 0.10f;
@@ -638,15 +664,20 @@ void Engine::render (int start, int end)
         const double vibPluck = 1.0 + vibDepth * lfo;
         const double vibPad   = 1.0 + vibDepth * 0.4 * lfo;
 
-        float l = 0.0f, r = 0.0f;
+        float sl = 0.0f, sr2 = 0.0f;
 
         for (auto& v : plucks)
         {
             if (! v.active) continue;
             const float s = renderPluck (v, vibPluck, lfo01, tEff) * plateGains[v.model];
-            l += s * v.gainL;
-            r += s * v.gainR;
+            sl  += s * v.gainL;
+            sr2 += s * v.gainR;
         }
+
+        SL[i] += sl;
+        SR[i] += sr2;
+
+        float l = 0.0f, r = 0.0f;
 
         for (auto& v : pads)
         {
@@ -678,12 +709,80 @@ void Engine::render (int start, int end)
     }
 }
 
+void Engine::processSlideBus (int numSamples)
+{
+    auto* L = slide.getWritePointer (0);
+    auto* R = slide.getWritePointer (1);
+
+    // 1. Filtre résonant + LFO
+    const bool filterOn = p.cutoff < 19000.0f || p.lfoDepth > 0.001f;
+    if (filterOn)
+    {
+        filter.setResonance (0.707f + p.resonance * p.resonance * 9.0f);
+        const double lfoInc = p.lfoRate / sr;
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            filterLfoPhase += lfoInc;
+            wrap (filterLfoPhase);
+
+            if ((filterCounter++ & 7) == 0)
+            {
+                const double mod = std::pow (2.0, p.lfoDepth * 3.0 * std::sin (twoPi * filterLfoPhase));
+                filter.setCutoffFrequency ((float) juce::jlimit (30.0, 0.45 * sr, (double) p.cutoff * mod));
+            }
+            L[i] = filter.processSample (0, L[i]);
+            R[i] = filter.processSample (1, R[i]);
+        }
+    }
+
+    // 2. Saturation
+    if (p.drive > 0.001f)
+    {
+        const float k = 1.0f + 6.0f * p.drive;
+        const float makeup = 1.0f / std::pow (k, 0.75f);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            L[i] = std::tanh (k * L[i]) * makeup;
+            R[i] = std::tanh (k * R[i]) * makeup;
+        }
+    }
+
+    // 3. Delay ping-pong calé sur le tempo
+    if (p.delayMix > 0.001f && ! delayL.empty())
+    {
+        const int size = (int) delayL.size();
+        const double seconds = delayBeats[juce::jlimit (0, numDelayDivs - 1, p.delayDiv)] * 60.0 / juce::jlimit (30.0, 300.0, p.bpm);
+        const int d = juce::jlimit (1, size - 2, (int) (seconds * sr));
+        const float fb = juce::jlimit (0.0f, 0.92f, p.delayFeedback);
+        const float damp = (float) juce::jmin (1.0, twoPi * 4500.0 / sr);
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            int rd = delayWrite - d;
+            if (rd < 0) rd += size;
+            const float dl = delayL[(size_t) rd];
+            const float dr = delayR[(size_t) rd];
+
+            delayFbLp += damp * (dr * fb - delayFbLp);
+            delayL[(size_t) delayWrite] = 0.5f * (L[i] + R[i]) + delayFbLp;
+            delayR[(size_t) delayWrite] = dl * fb;
+            if (++delayWrite >= size) delayWrite = 0;
+
+            L[i] += dl * p.delayMix;
+            R[i] += dr * p.delayMix;
+        }
+    }
+}
+
 void Engine::applyEffects (int numSamples)
 {
-    if (p.reverb != lastReverb)
+    chorus.setMix (p.chorusMix);
+
+    if (p.reverb != lastReverb || p.roomSize != lastRoom)
     {
         juce::Reverb::Parameters rp;
-        rp.roomSize   = 0.8f;
+        rp.roomSize   = p.roomSize;
         rp.damping    = 0.45f;
         rp.wetLevel   = p.reverb * 0.45f;
         rp.dryLevel   = 1.0f - p.reverb * 0.3f;
@@ -691,6 +790,7 @@ void Engine::applyEffects (int numSamples)
         rp.freezeMode = 0.0f;
         reverb.setParameters (rp);
         lastReverb = p.reverb;
+        lastRoom = p.roomSize;
     }
 
     juce::dsp::AudioBlock<float> full (mix);
@@ -718,9 +818,13 @@ void Engine::process (juce::AudioBuffer<float>& output, const juce::MidiBuffer& 
     lastHold = p.hold;
 
     if (mix.getNumSamples() < n)
+    {
         mix.setSize (2, n, false, false, true);
+        slide.setSize (2, n, false, false, true);
+    }
 
     mix.clear (0, n);
+    slide.clear (0, n);
 
     int pos = 0;
     for (const auto meta : midi)
@@ -735,6 +839,10 @@ void Engine::process (juce::AudioBuffer<float>& output, const juce::MidiBuffer& 
     }
     if (pos < n)
         render (pos, n);
+
+    processSlideBus (n);
+    mix.addFrom (0, 0, slide, 0, 0, n);
+    mix.addFrom (1, 0, slide, 1, 0, n);
 
     applyEffects (n);
 

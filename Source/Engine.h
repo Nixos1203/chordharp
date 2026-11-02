@@ -38,7 +38,33 @@ struct Params
     bool  hold       = false;  // garde l'accord après relâchement de la touche
     int   plateVoice = Omni1;
     int   padVoice   = PadAnalog;
+
+    // Couche (2e son superposé au slide, comme le "sub voice" de l'OM-108)
+    int   layerVoice  = -1;     // -1 = aucune
+    float layerLevel  = 0.5f;
+    int   layerOctave = 0;      // -1 .. +2
+
+    float attack      = 0.0f;   // attaque des notes du slide (s)
+
+    // Bus du slide : filtre résonant + LFO, saturation, delay ping-pong
+    float cutoff      = 20000.0f;
+    float resonance   = 0.0f;
+    float lfoRate     = 0.5f;   // Hz
+    float lfoDepth    = 0.0f;   // 0..1 (= +/- 3 octaves)
+    float drive       = 0.0f;
+    int   delayDiv    = 2;      // index dans delayBeats
+    float delayFeedback = 0.0f;
+    float delayMix    = 0.0f;
+
+    // Global
+    float chorusMix   = 0.3f;
+    float roomSize    = 0.8f;
+    double bpm        = 120.0;
 };
+
+/** Divisions du delay, en temps (noires). */
+inline constexpr double delayBeats[] = { 0.25, 0.5, 0.75, 1.0, 1.5, 2.0 };
+inline constexpr int numDelayDivs = 6;
 
 /*  Moteur sonore, indépendant du format plugin.
 
@@ -89,7 +115,7 @@ private:
         int model = Omni1;
         double phase = 0, inc = 0, mphase = 0, minc = 0;
         float freq = 0, env = 0, decay = 0, envFast = 0, decayFast = 0;
-        float lp = 0, lp2 = 0, att = 0, gainL = 0, gainR = 0, vel = 0;
+        float lp = 0, lp2 = 0, att = 0, attStep = 1, gainL = 0, gainR = 0, vel = 0;
         // Karplus-Strong (harpe / guitare / banjo)
         float* ks = nullptr;
         int ksW = 0, ksExcite = 0, ksInt = 1;
@@ -120,6 +146,8 @@ private:
     void startChord (int root, int type);
     void releaseChord();
     void triggerPlate (int index, float velocity);
+    void startPluck (int model, int note, float velocity, float level, float pan, float detuneCents);
+    void processSlideBus (int numSamples);
     void render (int start, int end);
     void applyEffects (int numSamples);
 
@@ -129,7 +157,7 @@ private:
     double sr = 44100.0;
     int maxBlock = 512;
     Params p;
-    juce::AudioBuffer<float> mix;
+    juce::AudioBuffer<float> mix, slide;
 
     std::array<Pluck, 32> plucks;
     std::array<Pad, 16>   pads;
@@ -144,9 +172,17 @@ private:
     uint32_t ageCounter = 0;
     double lfoPhase = 0;
 
+    juce::dsp::StateVariableTPTFilter<float> filter;
+    double filterLfoPhase = 0.0;
+    int filterCounter = 0;
+
+    std::vector<float> delayL, delayR;
+    int delayWrite = 0;
+    float delayFbLp = 0.0f;
+
     juce::dsp::Chorus<float> chorus;
     juce::dsp::Reverb reverb;
-    float lastReverb = -1.0f;
+    float lastReverb = -1.0f, lastRoom = -1.0f;
     bool  lastHold = false;
 };
 

@@ -23,7 +23,7 @@ public:
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 5.0; }
+    double getTailLengthSeconds() const override { return 8.0; }
 
     int getNumPrograms() override;
     int getCurrentProgram() override { return currentPreset.load(); }
@@ -61,6 +61,10 @@ private:
     std::atomic<float>* pHold   = nullptr;
     std::atomic<float>* pPlate  = nullptr;
     std::atomic<float>* pPad    = nullptr;
+    std::atomic<float>* pLayer = nullptr, * pLayerLevel = nullptr, * pLayerOct = nullptr, * pAttack = nullptr;
+    std::atomic<float>* pCutoff = nullptr, * pReso = nullptr, * pLfoRate = nullptr, * pLfoDepth = nullptr;
+    std::atomic<float>* pDrive = nullptr, * pChorus = nullptr, * pDelayDiv = nullptr, * pDelayFb = nullptr;
+    std::atomic<float>* pDelayMix = nullptr, * pRoom = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ChordHarpProcessor)
 };

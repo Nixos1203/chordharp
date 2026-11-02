@@ -97,6 +97,7 @@ public:
 
 private:
     void timerCallback() override;
+    float uiScale() const;
 
     ChordHarpProcessor& proc;
     RetroLook look;
@@ -107,9 +108,13 @@ private:
     juce::ToggleButton holdButton;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> holdAttachment;
 
-    juce::Label plateVoiceLabel, padVoiceLabel;
-    juce::ComboBox plateVoiceBox, padVoiceBox;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> plateVoiceAttachment, padVoiceAttachment;
+    struct Combo
+    {
+        juce::ComboBox box;
+        juce::Label label;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> attachment;
+    };
+    Combo plateCombo, layerCombo, layerOctCombo, padCombo, delayCombo;
 
     struct Knob
     {
@@ -117,7 +122,11 @@ private:
         juce::Label label;
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
     };
-    std::array<Knob, 8> knobs;
+    std::array<Knob, 8>  sourceKnobs;
+    std::array<Knob, 11> fxKnobs;
+
+    void setupCombo (Combo&, const juce::String& title, const juce::StringArray& items, const char* paramId);
+    void setupKnob (Knob&, const juce::String& title, const char* paramId);
 
     int shownPreset = -1;
 

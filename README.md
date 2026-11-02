@@ -14,7 +14,7 @@ Chaque modification poussée sur `main` recompile automatiquement le plugin (ong
 |---|---|
 | Boutons d'accords (souris) | Majeur / mineur / 7e sur les 12 notes, rangées façon Omnichord |
 | Pad SLIDE (souris) | Une seule surface, comme la strumplate : **haut/bas** = les notes de l'accord sur 4 octaves, **gauche/droite** = le timbre (doux → brillant) |
-| PRESETS | 10 sons prêts à jouer : Omni 1, Omni 2, Harpe, Guitare, Banjo, Vibes, Piano élec, Cristal, Synth trance, Boîte à musique |
+| PRESETS | 20 sons en 5 univers : Classique, Cinéma, Trance, Rétro, Ambient |
 | C2–B2 (FL Studio) | Accords majeurs |
 | C3–B3 | Accords mineurs |
 | C4–B4 | Accords de 7e |
@@ -26,7 +26,12 @@ Chaque modification poussée sur `main` recompile automatiquement le plugin (ong
 ## Réglages
 
 - **Son du slide** : 10 moteurs (Omni 1/2 analogiques, harpe / guitare / banjo en cordes pincées, vibraphone, piano électrique, cristal, synth pluck, boîte à musique)
+- **Couche** : un 2e son superposé au slide (octave -1 à +2, niveau réglable)
 - **Son de l'accord** : Analog, Orgue, Cordes, Accordéon, Chœur, Piano électrique
+- **Attaque** : du pluck sec aux montées lentes
+- **Effets du slide** : filtre résonant + LFO, drive, delay ping-pong calé sur le tempo du projet
+- **Global** : chorus, reverb (niveau + taille), volume
+- La fenêtre se redimensionne depuis le coin en bas à droite
 - **Accord** : volume de la nappe tenue pendant que l'accord est enfoncé
 - **Basse** : volume de la basse auto (fondamentale)
 - **Slide** : volume de la plaque
